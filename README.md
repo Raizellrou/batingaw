@@ -102,7 +102,11 @@ Named deliberately rather than discovered later.
 
 ## Scope for this hackathon
 
-Signed alert packet format with replay protection · multi-hop propagation with node-failure rerouting, in simulation · simulated sensor and siren · offline PWA with purok-level evacuation instructions · store-and-forward queue · alert anchoring on Stellar · claimable-balance payout flow.
+**Version 0 (Forge).** Signed alert packet format with replay protection · multi-hop propagation with node-failure rerouting, in simulation · simulated sensor and siren. Mesh and signature verification only — no PWA, no Stellar.
+
+**Version 1 (Refine).** Offline PWA with purok-level evacuation instructions · store-and-forward queue · alert anchoring on Stellar.
+
+**MVP (Launch).** Claimable-balance payout flow, plus the full end-to-end scenario below.
 
 **Definition of done:** trip the sensor, watch a signed warning hop five nodes with the internet off, see a phone show the right route for the right purok, reject a forged copy of that same alert, then restore connectivity and watch the record and payout land on Stellar.
 
