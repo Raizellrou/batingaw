@@ -1,4 +1,6 @@
-# Batingaw
+# LIGTAS
+
+*LoRa-Integrated Grassroots Typhoon Alert System*
 
 **Flood warnings that work when the internet doesn't — and disaster cash that arrives in days, not weeks.**
 
