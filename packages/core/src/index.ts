@@ -3,7 +3,7 @@ export type { AlertBody, AlertPacket } from "./types.js";
 
 export { BODY_LENGTH, encodeBody, decodeBody, validateBody } from "./codec.js";
 
-export { ALERT_HASH_LENGTH, alertHash, toHex } from "./hash.js";
+export { ALERT_HASH_LENGTH, alertHash, toHex, bytesFromHex } from "./hash.js";
 
 export { SIGNATURE_LENGTH, signBody, verifyBody } from "./sign.js";
 

@@ -10,10 +10,12 @@ Companion to [LIGTAS-PRD.md](../LIGTAS-PRD.md). The PRD says *what* the system i
 
 | Package | State |
 |---|---|
-| `packages/core` | Packet codec (`DataView`, big-endian), SEP-53 sign/verify, `ReplayGuard`, `emit-alert` / `verify-alert` CLI bridges. 29 Vitest tests, typecheck clean. |
-| `packages/mesh-sim` | Track A proof: 9/9 checks against a live Meshtasticator instance — multi-hop delivery, relay killed mid-run with the kill independently verified, forged and replayed packets propagating through the mesh but rejected at verification. |
+| `packages/core` | Packet codec (`DataView`, big-endian), SEP-53 sign/verify, `ReplayGuard`, alert bundle types (`AlertBundle`), `emit-alert` / `verify-alert` CLI bridges. 29 Vitest tests, typecheck clean. |
+| `packages/mesh-sim` | Track A proof: 9/9 checks against a live Meshtasticator instance — multi-hop delivery, relay killed mid-run with the kill independently verified, forged and replayed packets propagating through the mesh but rejected at verification. `bridge_to_hub.py` additionally proven live against a real running hub (below), not just against `verify-alert.ts`. |
+| `packages/hub` | Express + SQLite (WAL, `synchronous=FULL`). `POST /alert` verifies via `@ligtas/core` and stores; `GET /alerts` serves a live `AlertBundle`, schema-validated against `docs/alert-bundle.schema.json`. Proven against a real mesh-sim run: genuine alert accepted, forged alert crosses the mesh and is rejected at the hub. |
+| `apps/pwa` | Vite + React + Tailwind v4, against `@ligtas/core` directly. Loads a bundle, runs every entry through real `decodePacket`/`verifyBody`/`ReplayGuard` in the browser. Verified visually: instruction card, "not affected" card, purok persistence across reload. |
 
-**Not started:** `packages/hub`, `packages/stellar`, `apps/pwa`, `apps/sensor-wokwi`.
+**Not started:** `packages/stellar`, `apps/sensor-wokwi`.
 
 **Dependencies verified working on this machine**, so none of them is an unknown when the stage that needs them starts:
 

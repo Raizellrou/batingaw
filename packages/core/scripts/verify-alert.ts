@@ -13,10 +13,7 @@
  *              evaluate the replay rule statelessly per call. Default -1
  *              (nothing seen yet).
  */
-import { alertHash, toHex } from "../src/hash.js";
-import { decodeBody } from "../src/codec.js";
-import { ReplayGuard } from "../src/replay.js";
-import { verifyPacket } from "../src/packet.js";
+import { alertHash, decodeBody, ReplayGuard, toHex, verifyPacket } from "@ligtas/core";
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);

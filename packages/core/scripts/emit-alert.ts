@@ -26,8 +26,7 @@
  *                signing — this is what a verifying endpoint should also reject
  */
 import { Keypair } from "@stellar/stellar-sdk/base";
-import { encodePacket } from "../src/packet.js";
-import { CURRENT_VERSION, type AlertBody } from "../src/types.js";
+import { CURRENT_VERSION, encodePacket, type AlertBody } from "@ligtas/core";
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");

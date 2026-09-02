@@ -19,3 +19,15 @@ export async function alertHash(body: Uint8Array): Promise<Uint8Array> {
 export function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** Inverse of toHex. Used to decode a wire packet carried as hex -- see AlertBundleEntry. */
+export function bytesFromHex(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new RangeError(`hex string must have an even length, got ${hex.length}`);
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}

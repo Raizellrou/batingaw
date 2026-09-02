@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 .venv/
 out/
+packages/hub/*.sqlite*

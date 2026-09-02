@@ -1,6 +1,7 @@
 import {
   ReplayGuard,
   alertHash,
+  bytesFromHex,
   decodePacket,
   toHex,
   verifyBody,
@@ -42,7 +43,7 @@ export async function evaluateBundle(bundle: AlertBundle): Promise<EvaluatedAler
   const results: EvaluatedAlert[] = []
 
   for (const [index, entry] of bundle.alerts.entries()) {
-    const packet = hexToBytes(entry.packetHex)
+    const packet = bytesFromHex(entry.packetHex)
     const { body, signature } = decodePacket(packet)
     const bodyBytes = packet.subarray(0, 20)
 
@@ -65,10 +66,4 @@ export async function evaluateBundle(bundle: AlertBundle): Promise<EvaluatedAler
   }
 
   return results
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16)
-  return bytes
 }

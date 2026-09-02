@@ -13,6 +13,8 @@ Python, not TypeScript — see [PRD §5.5](../../LIGTAS-PRD.md#55-carriage-over-
 
 Every accept/reject decision is made by `packages/core` (via the `emit-alert.ts` / `verify-alert.ts` CLI bridges), never reimplemented here. This package only ever moves bytes and orchestrates the simulator.
 
+`bridge_to_hub.py` is the real Track A/B join: it watches the hub node's own client interface (not the orchestrator's internal relay bookkeeping `run_relay_test.py` uses) and POSTs whatever arrives there to a real, running `packages/hub` instance over HTTP. Verified live: a genuine alert reaches the hub node, gets POSTed, and comes back `accepted` from a real Express server backed by real SQLite; a forged one crosses the mesh identically (dumb firmware forwards it like any other packet) but the hub rejects it on signature. Requires `packages/hub` running separately -- see its README -- and `LIGTAS_DEMO_ISSUER_SECRET` set to the secret matching the hub's configured issuer public key (never commit that secret anywhere).
+
 ## Prerequisites
 
 - Docker Desktop running
@@ -36,6 +38,7 @@ Set `MESHTASTICATOR_PATH` if Meshtasticator isn't checked out as a sibling direc
 - `driver.py` — shared setup: container lifecycle, topology installation, booting `InteractiveSim` via its Python API (not its interactive `(Cmd)` CLI, which needs a live terminal), reading a relay's process ID inside the container.
 - `run_relay_test.py` — the full proof, described above.
 - `debug_propagation.py` — a lighter diagnostic that sends one packet and dumps everything observed, including per-node relay stats. What was actually used to find both real bugs below.
+- `bridge_to_hub.py` — the live mesh-to-hub bridge, described above.
 
 ## Two real bugs found building this — not hypothetical
 
@@ -43,5 +46,6 @@ Documented here because they're easy to reintroduce if this topology or driver l
 
 1. **All nodes defaulted to `CLIENT_MUTE`.** With `isRouter` and `isRepeater` both false, a node's Meshtastic role is `CLIENT_MUTE`, which does not forward other nodes' traffic at all. Relay nodes need `isRepeater: true` explicitly.
 2. **`kill` has no standalone binary in the `meshtastic/meshtasticd` image**, only a shell builtin. `container.exec_run(["kill", "-9", pid])` fails with exit 127 (`executable file not found`) — silently, if you don't check the exit code. Has to go through `exec_run(["sh", "-c", f"kill -9 {pid}"])` instead.
+3. **`emit_alert(mode="genuine")` with no `issuer_secret` signs with a fresh random keypair.** First draft of `bridge_to_hub.py` did exactly this for its "genuine" alert, and the hub correctly reported `rejected_signature` -- because as far as the hub was concerned, it was. `issuerIndex` in the packet body is just a config value; it doesn't tie the packet to any specific keypair. A "genuine" test packet is only genuine if it's signed by the secret matching whatever public key the hub actually has configured for that index.
 
-Both were caught by instrumenting a real run and reading the actual output, not by reasoning about what should happen.
+All three were caught by instrumenting a real run and reading the actual output, not by reasoning about what should happen.
