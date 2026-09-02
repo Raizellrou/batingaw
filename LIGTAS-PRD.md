@@ -4,7 +4,7 @@
 
 Track: Climate Resilience and Hydrometeorological Disaster Management
 Stage 3 · Forge
-Version 0.2
+Version 0.3
 
 This document is the system design for the concept set out in [README.md](README.md). The README states the problem and the pitch; this document states what gets built, how the pieces fit, and what "done" means at each stage.
 
@@ -27,7 +27,7 @@ The design principle that governs every decision below: **warning delivery must 
 | # | Goal | Measured by |
 |---|---|---|
 | G1 | Deliver a signed alert across a multi-hop mesh with no internet | Alert reaches hub through ≥5 hops in simulation, end to end |
-| G2 | Reject forged and replayed alerts at every hop | Forged packet and replayed packet both dropped at first relay |
+| G2 | Reject forged and replayed alerts before they're acted on | Forged packet and replayed packet both reach the hub over the mesh but are rejected there, never triggering the siren or an anchor |
 | G3 | Survive node failure without losing the alert | Alert still reaches hub after a relay node is killed mid-run |
 | G4 | Show a resident the instruction for *their* purok, offline | PWA loads from cache with the device in airplane mode |
 | G5 | Produce a tamper-evident public record of every alert | Alert hash visible on Stellar Expert, matches locally recomputed hash |
@@ -150,7 +150,9 @@ Per the project's key design rule, Stellar keypairs *are* the alert identity —
 
 A multi-hop mesh means the *same* alert legitimately arrives several times by different paths. Duplicate suppression and replay defence are therefore separate mechanisms, and conflating them would either break propagation or open a replay hole.
 
-Each node keeps two pieces of state:
+**Where this logic runs — a correction from v0.1.** The table below describes what a *verifying endpoint* does on receiving a packet: the hub, the PWA, and `mesh-sim`'s test observer. It does not run on the LoRa relay nodes themselves. Those are stock Meshtastic firmware — they flood-forward every packet within its hop limit regardless of content, because they have no way to parse a custom payload and decide whether to suppress it. A forged or replayed packet propagates through the mesh exactly like a genuine one; what stops it is that nothing acts on it once it arrives. See §5.5 and §9.
+
+Each verifying endpoint keeps two pieces of state, per issuer it tracks:
 
 1. `lastSeq[issuerIndex]` — highest sequence number accepted from that issuer
 2. `seenHashes` — set of `alertHash` values seen recently, with a TTL
@@ -159,21 +161,23 @@ On receiving a packet:
 
 | Condition | Action |
 |---|---|
-| Signature invalid | Drop, count as `rejected_signature` |
-| `issuerIndex` not in cached list | Drop, count as `rejected_unknown_issuer` |
-| `alertHash` in `seenHashes` | Drop silently — normal mesh duplicate, not an attack |
-| `sequence` < `lastSeq[issuer]` | Drop, count as `rejected_replay` |
-| `sequence` ≥ `lastSeq[issuer]`, hash unseen | **Accept**: rebroadcast, add hash to `seenHashes`, set `lastSeq` |
+| Signature invalid | Reject, count as `rejected_signature` — the packet is not acted on |
+| `issuerIndex` not in cached list | Reject, count as `rejected_unknown_issuer` |
+| `alertHash` in `seenHashes` | Ignore silently — normal mesh duplicate, not an attack |
+| `sequence` < `lastSeq[issuer]` | Reject, count as `rejected_replay` |
+| `sequence` ≥ `lastSeq[issuer]`, hash unseen | **Accept**: act on it (fire siren / show instruction / log), add hash to `seenHashes`, set `lastSeq` |
 
 Clock trust is deliberately excluded from the accept decision. Field nodes have no NTP and will drift; `issuedAt` is recorded and anchored as the issuer's claim of time, but a node never rejects a packet for a timestamp it cannot independently verify. Sequence number is the sole ordering defence. **Open question:** whether the hub — which does eventually see real time — should flag alerts whose `issuedAt` diverges wildly from their arrival time, as a monitoring signal rather than a drop rule.
 
 ### 5.5 Carriage over the mesh
 
-The 84-byte packet is opaque payload as far as Meshtastic is concerned. It rides as the data payload of a Meshtastic packet on a dedicated port number, broadcast to the mesh — nothing is JSON-wrapped, base64'd, or otherwise re-encoded in transit. What a relay verifies is byte-for-byte what the sensor signed, which is what makes the signature meaningful end to end.
+The 84-byte packet is opaque payload as far as Meshtastic is concerned. It rides as the data payload of a Meshtastic packet on a private app port (256), broadcast to the mesh — nothing is JSON-wrapped, base64'd, or otherwise re-encoded in transit. Relays forward it unparsed, exactly as received; what a verifying endpoint checks is byte-for-byte what the sensor signed, which is what makes the signature meaningful despite passing through firmware that has no idea what it's carrying.
 
-In simulation, `packages/mesh-sim` drives Meshtasticator's nodes over their TCP ports (4403 upward, one per node) to inject a packet at the sensor node and observe which nodes receive and rebroadcast it, and to kill a relay mid-run for the rerouting test.
+**The mesh has no application logic — a correction from v0.1.** Each simulated node runs stock `meshtasticd`; it floods every packet within hop limit regardless of payload, because it cannot parse our format. Propagation between nodes isn't even native radio simulation inside one process: each `meshtasticd` instance streams its outgoing transmissions, wrapped in Meshtastic's own `SIMULATOR_APP` envelope, back over its TCP connection to Meshtasticator's orchestrator process, which computes range from node positions and antenna gain and re-injects the packet into whichever other nodes' `meshtasticd` instances are in reach. That orchestrator — not a piece of our code — *is* the simulated radio medium. Confirmed directly: connecting a bare TCP client to a node's port and sending data with no orchestrator attached produces no propagation at all: the transmission has nowhere to go. See §9 for what this means for the threat model.
 
-**Language boundary — deliberate.** `mesh-sim` is Python, not Node, which is the one place this project departs from being a TypeScript monorepo. Two reasons. First, the mature Meshtastic client library is Python and is already proven against our simulator; the JavaScript equivalent is a pre-1.0 package that has not been updated in close to a year. Second, and decisively, the Meshtastic client libraries are GPL-3.0-only. Importing one into this MIT-licensed codebase would force the whole project to GPL. Running Meshtasticator and a Python driver as *separate programs* keeps that boundary clean — the same boundary Meshtasticator itself relies on. `packages/core` emits the 84 bytes; the Python driver moves them; no GPL code is ever linked into ours.
+`packages/mesh-sim` therefore doesn't reimplement propagation; it drives Meshtasticator's own orchestrator (`InteractiveSim`, run via its `-s` script mode rather than its interactive `(Cmd)` prompt, which needs a live terminal and can't be scripted). It connects to the sensor node's port to inject a signed packet, connects to other nodes' ports to observe arrival, and uses `docker exec` to kill a relay's `meshtasticd` process mid-run for the rerouting test. Node ports are `4404 + nodeId`.
+
+**Language boundary — deliberate.** `mesh-sim` is Python, not Node, which is the one place this project departs from being a TypeScript monorepo. Two reasons. First, the mature Meshtastic client library is Python and is already proven against our simulator — it's what Meshtasticator itself is built on. The JavaScript equivalent is a pre-1.0 package that has not been updated in close to a year. Second, and decisively, the Meshtastic client libraries are GPL-3.0-only. Importing one into this MIT-licensed codebase would force the whole project to GPL. Running Meshtasticator and a Python driver as *separate programs* keeps that boundary clean — the same boundary Meshtasticator itself relies on. `packages/core` emits the 84 bytes; the Python driver moves them; no GPL code is ever linked into ours.
 
 ---
 
@@ -256,8 +260,8 @@ It nonetheless carries `packages/core` and can verify a packet itself, because `
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Forged alert from an attacker with a cheap LoRa radio | Ed25519 verification at every hop against a cached issuer list | Designed |
-| Replay of a previously valid alert | Per-issuer monotonic sequence check | Designed |
+| Forged alert from an attacker with a cheap LoRa radio | Ed25519 verification at every **verifying endpoint** (hub, PWA) before the alert is acted on. Relays are stock Meshtastic firmware and forward it unparsed like any other packet — see §5.5 — so a forged packet does propagate through the mesh, but never triggers a siren or a displayed instruction anywhere it's checked | Designed |
+| Replay of a previously valid alert | Per-issuer monotonic sequence check, same endpoints | Designed |
 | Legitimate duplicate treated as an attack | Separate hash-based dedupe, distinct from the sequence rule | Designed |
 | Dispute over whether a warning was issued | `MEMO_HASH` anchor on a ledger no party controls | Designed |
 | Double payout on drain retry | Idempotent worker keyed on `alert_hash`, plus balance existence check | Designed, needs tests |
@@ -297,7 +301,7 @@ Testing is Vitest, concentrated on `packages/core` — the packet codec, signatu
 
 | Stage | Closes | Deliverable | Contents | Exit criterion |
 |---|---|---|---|---|
-| **3 · Forge** | 19 Sep 2026 | Version 0 | Packet codec, sign/verify, replay + dedupe rules, multi-hop propagation with node-failure rerouting, minimal hub, resident PWA, simulated sensor and siren | A signed alert reaches the hub across ≥5 hops with a relay killed mid-run, a forged packet and a replayed packet are both dropped, and the PWA shows the right purok its instruction |
+| **3 · Forge** | 19 Sep 2026 | Version 0 | Packet codec, sign/verify, replay + dedupe rules, multi-hop propagation with node-failure rerouting, minimal hub, resident PWA, simulated sensor and siren | A signed alert reaches the hub across ≥5 hops with a relay killed mid-run; a forged packet and a replayed packet both reach the hub over the mesh but are rejected there before anything acts on them; the PWA shows the right purok its instruction |
 | **4 · Refine** | TODO | Version 1 | Offline hardening of the PWA, store-and-forward outbox, Stellar anchoring | A phone in airplane mode shows the correct purok instruction; an alert hash appears on Stellar Expert and matches the locally recomputed hash |
 | **5 · Launch** | TODO | MVP | Claimable-balance payout flow, full end-to-end demo | The full definition of done below, recorded start to finish |
 
@@ -341,6 +345,7 @@ Carried forward rather than invented answers. Each needs a decision before the s
 
 - **Mesh carriage and the mesh-sim boundary.** Previously undefined: what actually crosses the TCP boundary to Meshtasticator. Now specified in §5.5 — the raw 84 bytes as Meshtastic data payload, driven by a Python process kept deliberately outside the TypeScript codebase for licence reasons.
 - **Decoder input bounds.** Previously unstated: what a decoder does with an out-of-range field value. Now split in two — decoding never rejects on field values, since every byte pattern is structurally valid, while `validateBody` handles semantics separately. Implemented and tested in `packages/core`.
+- **Where verification happens — a correction, not just a resolution.** v0.1 stated signature/replay verification happens "at every hop." Building against a real Meshtasticator instance showed this isn't achievable without custom Meshtastic firmware: stock relays flood-forward any payload unparsed. §5.4, §5.5, and §9 now state the real design — verification at the hub and PWA, endpoints that already run our code — and G2's exit criterion is worded to match. The security property is unchanged: a forged alert never triggers a siren or a display anywhere it's checked. What changed is *where* "checked" happens.
 
 ---
 
