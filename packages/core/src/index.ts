@@ -11,3 +11,6 @@ export { PACKET_LENGTH, encodePacket, decodePacket, verifyPacket } from "./packe
 
 export { ReplayGuard } from "./replay.js";
 export type { ReplayDecision, ReplayGuardOptions } from "./replay.js";
+
+export { ALERT_BUNDLE_VERSION } from "./bundle.js";
+export type { AlertBundle, AlertBundleEntry, AlertBundleIssuer, AlertBundleSource } from "./bundle.js";
