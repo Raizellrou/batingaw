@@ -3,8 +3,8 @@
 *LoRa-Integrated Grassroots Typhoon Alert System*
 
 Track: Climate Resilience and Hydrometeorological Disaster Management
-Stage 2 · Blueprint
-Version 0.1 · Draft
+Stage 3 · Forge
+Version 0.2
 
 This document is the system design for the concept set out in [README.md](README.md). The README states the problem and the pitch; this document states what gets built, how the pieces fit, and what "done" means at each stage.
 
@@ -167,6 +167,14 @@ On receiving a packet:
 
 Clock trust is deliberately excluded from the accept decision. Field nodes have no NTP and will drift; `issuedAt` is recorded and anchored as the issuer's claim of time, but a node never rejects a packet for a timestamp it cannot independently verify. Sequence number is the sole ordering defence. **Open question:** whether the hub — which does eventually see real time — should flag alerts whose `issuedAt` diverges wildly from their arrival time, as a monitoring signal rather than a drop rule.
 
+### 5.5 Carriage over the mesh
+
+The 84-byte packet is opaque payload as far as Meshtastic is concerned. It rides as the data payload of a Meshtastic packet on a dedicated port number, broadcast to the mesh — nothing is JSON-wrapped, base64'd, or otherwise re-encoded in transit. What a relay verifies is byte-for-byte what the sensor signed, which is what makes the signature meaningful end to end.
+
+In simulation, `packages/mesh-sim` drives Meshtasticator's nodes over their TCP ports (4403 upward, one per node) to inject a packet at the sensor node and observe which nodes receive and rebroadcast it, and to kill a relay mid-run for the rerouting test.
+
+**Language boundary — deliberate.** `mesh-sim` is Python, not Node, which is the one place this project departs from being a TypeScript monorepo. Two reasons. First, the mature Meshtastic client library is Python and is already proven against our simulator; the JavaScript equivalent is a pre-1.0 package that has not been updated in close to a year. Second, and decisively, the Meshtastic client libraries are GPL-3.0-only. Importing one into this MIT-licensed codebase would force the whole project to GPL. Running Meshtasticator and a Python driver as *separate programs* keeps that boundary clean — the same boundary Meshtasticator itself relies on. `packages/core` emits the 84 bytes; the Python driver moves them; no GPL code is ever linked into ours.
+
 ---
 
 ## 6. Hub
@@ -238,7 +246,9 @@ React + Vite + Tailwind + `vite-plugin-pwa`, with `idb` for cached alerts.
 - On receiving an alert, the app shows the instruction for that resident's purok only if their bit is set in `purokBitmap` — otherwise it shows an explicit "your purok is not affected" state rather than an empty screen
 - Cached alerts are listed newest first, each showing issued time and severity
 
-The PWA is a *display* surface. It performs no signature verification of its own and is not on the trust path; the hub is the verifying authority for anything the PWA renders.
+In the field the PWA is a *display* surface: the hub is the verifying authority, and the phone renders what the hub has already accepted. The PWA's own verification is not what keeps a forged alert off a resident's screen — the relays and the hub do that, before it ever reaches WiFi range.
+
+It nonetheless carries `packages/core` and can verify a packet itself, because `core` is pure and offline and therefore runs unchanged in a browser. That matters for the hosted build described in §11: with no hub reachable, in-browser verification is what makes a published alert bundle independently checkable by anyone who opens the page.
 
 ---
 
@@ -270,7 +280,8 @@ TypeScript monorepo, pnpm workspaces. Not yet scaffolded — this is the intende
 packages/
   core/          alert encode/decode (DataView), sign/verify, replay rules
                  pure and offline; never imports Horizon or RPC
-  mesh-sim/      Node; TCP client to Meshtasticator
+  mesh-sim/      Python; TCP driver for Meshtasticator — see §5.5 for why
+                 this one package is not TypeScript
   hub/           Node + Express + better-sqlite3 outbox, siren, PWA host
   stellar/       @stellar/stellar-sdk; Horizon Testnet anchoring + payouts
 apps/
@@ -284,19 +295,31 @@ Testing is Vitest, concentrated on `packages/core` — the packet codec, signatu
 
 ## 11. Milestones
 
-| Stage | Deliverable | Contents | Exit criterion |
-|---|---|---|---|
-| **3 · Forge** | Version 0 | Packet codec, sign/verify, replay + dedupe rules, multi-hop propagation with node-failure rerouting, simulated sensor and siren | A signed alert reaches the hub across ≥5 hops with a relay killed mid-run; a forged packet and a replayed packet are both dropped |
-| **4 · Refine** | Version 1 | Offline PWA with purok-level instructions, store-and-forward outbox, Stellar anchoring | A phone in airplane mode shows the correct purok instruction; an alert hash appears on Stellar Expert and matches the locally recomputed hash |
-| **5 · Launch** | MVP | Claimable-balance payout flow, full end-to-end demo | The full definition of done below, recorded start to finish |
+| Stage | Closes | Deliverable | Contents | Exit criterion |
+|---|---|---|---|---|
+| **3 · Forge** | 19 Sep 2026 | Version 0 | Packet codec, sign/verify, replay + dedupe rules, multi-hop propagation with node-failure rerouting, minimal hub, resident PWA, simulated sensor and siren | A signed alert reaches the hub across ≥5 hops with a relay killed mid-run, a forged packet and a replayed packet are both dropped, and the PWA shows the right purok its instruction |
+| **4 · Refine** | TODO | Version 1 | Offline hardening of the PWA, store-and-forward outbox, Stellar anchoring | A phone in airplane mode shows the correct purok instruction; an alert hash appears on Stellar Expert and matches the locally recomputed hash |
+| **5 · Launch** | TODO | MVP | Claimable-balance payout flow, full end-to-end demo | The full definition of done below, recorded start to finish |
 
 **Definition of done (from the README, unchanged).** Trip the sensor, watch a signed warning hop five nodes with the internet off, see a phone show the right route for the right purok, reject a forged copy of that same alert, then restore connectivity and watch the record and payout land on Stellar.
 
+### Version 0 is a vertical slice, not a horizontal layer
+
+Version 0 spans every layer of the system thinly rather than completing the lower layers fully — sensor to mesh to hub to phone, rough at each step but connected end to end. The alternative, finishing the mesh entirely before touching the hub or the PWA, would leave the two riskiest integration points untested until the last stage.
+
+This moves the resident PWA from Version 1 into Version 0. Stage 3's deliverable is submitted as a hosted URL, and the PWA is the only part of this system that can be *served* at one: the mesh runs as Docker containers on a development machine and cannot be deployed anywhere. Version 1 keeps the PWA work that genuinely belongs there — service-worker caching, IndexedDB persistence, true offline behaviour.
+
+### What the hosted build actually is
+
+The published Version 0 URL serves the real PWA, not a mock of it. Because no hub is reachable from a public host, it runs against a captured alert bundle — genuine signed packets recorded from an actual Meshtasticator run, including a forged and a replayed one — and verifies their signatures in the browser via `packages/core`. Anyone opening the page can alter a byte and watch verification fail.
+
+Stated plainly so it is not mistaken for more than it is: **the hosted page proves the packet format, the signature scheme, and the rejection rules. It does not prove live radio propagation** — that is what the recorded trace and the local simulator runs are for.
+
 ### Sequencing risk
 
-Meshtasticator is the only component with meaningful setup risk and it sits underneath everything in Stage 3, so it gets validated first. `packages/core` is pure and has no simulator dependency, so codec and signature work proceeds in parallel and is not blocked if the simulator fights back.
+Meshtasticator was the only component with meaningful setup risk and it sits underneath everything in Stage 3. It has now been validated: three simulated nodes running the real Meshtastic firmware under Docker, with a traceroute confirming a message routed `node 0 → node 1 → node 2` between nodes placed out of direct radio range of each other. Multi-hop relay works.
 
-**TODO:** Stage 2 closes 12 September 2026. Closing dates for Stages 3–5 are not yet confirmed; fill in once the schedule is published.
+`packages/core` is pure and has no simulator dependency, so the codec, signing, and replay rules were built and tested in parallel — 29 tests passing — and were never blocked on the simulator. The remaining Stage 3 risk is integration, not setup: the mesh driver and the hub have not yet met.
 
 ---
 
@@ -304,13 +327,20 @@ Meshtasticator is the only component with meaningful setup risk and it sits unde
 
 Carried forward rather than invented answers. Each needs a decision before the stage that depends on it.
 
-1. **Sensor trust.** A signature authenticates the sender, not the reading. What, if anything, constrains a compromised or miscalibrated sensor that emits validly signed nonsense? Needed before Stage 5, when money attaches to alerts.
-2. **Key lifecycle.** Rotation, revocation, and custody for the issuer key, given that it is also a funds-controlling Stellar account and that captains change with elections.
-3. **Threshold ownership.** Who sets the water-level threshold per river, how it is calibrated, and what the cost of a false positive is. Currently unowned.
-4. **Pool replenishment.** The resilience pool is pre-funded; the refill cycle after a payout, and behaviour when the pool is drained mid-season, are undefined.
-5. **Registry synchronisation.** If a barangay needs three or four hubs for WiFi coverage, whether each carries a full registry copy and how they reconcile.
-6. **Reclaim window.** How long an unclaimed claimable balance stays outstanding before the barangay account can reclaim it.
-7. **Deployment partner.** No barangay or LGU has committed to a pilot. Field validation (₱4,300, two nodes) cannot be scheduled without one.
+1. **Duty cycle.** AS923-3 constrains airtime, not just frequency. Every relay rebroadcasting every valid packet at every hop has a ceiling, and a severe event producing repeated alerts is exactly when the mesh is busiest. Not modelled. Meshtasticator reports channel utilisation and air-time statistics, so this is measurable during Stage 3 rather than left to speculation.
+2. **Sensor trust.** A signature authenticates the sender, not the reading. What, if anything, constrains a compromised or miscalibrated sensor that emits validly signed nonsense? Needed before Stage 5, when money attaches to alerts.
+3. **Key lifecycle.** Rotation, revocation, and custody for the issuer key, given that it is also a funds-controlling Stellar account and that captains change with elections.
+4. **Threshold ownership.** Who sets the water-level threshold per river, how it is calibrated, and what the cost of a false positive is. Currently unowned.
+5. **Pool replenishment.** The resilience pool is pre-funded; the refill cycle after a payout, and behaviour when the pool is drained mid-season, are undefined.
+6. **Registry synchronisation.** If a barangay needs three or four hubs for WiFi coverage, whether each carries a full registry copy and how they reconcile.
+7. **Reclaim window.** How long an unclaimed claimable balance stays outstanding before the barangay account can reclaim it.
+8. **Payout denomination.** §7 specifies a flat amount per severity tier but names neither the asset nor the figures. Needed before Stage 5.
+9. **Deployment partner.** No barangay or LGU has committed to a pilot. Field validation (₱4,300, two nodes) cannot be scheduled without one.
+
+### Resolved since v0.1
+
+- **Mesh carriage and the mesh-sim boundary.** Previously undefined: what actually crosses the TCP boundary to Meshtasticator. Now specified in §5.5 — the raw 84 bytes as Meshtastic data payload, driven by a Python process kept deliberately outside the TypeScript codebase for licence reasons.
+- **Decoder input bounds.** Previously unstated: what a decoder does with an out-of-range field value. Now split in two — decoding never rejects on field values, since every byte pattern is structurally valid, while `validateBody` handles semantics separately. Implemented and tested in `packages/core`.
 
 ---
 
