@@ -4,7 +4,7 @@
 
 Track: Climate Resilience and Hydrometeorological Disaster Management
 Stage 3 · Forge
-Version 0.3
+Version 0.4
 
 This document is the system design for the concept set out in [README.md](README.md). The README states the problem and the pitch; this document states what gets built, how the pieces fit, and what "done" means at each stage.
 
@@ -338,13 +338,13 @@ Carried forward rather than invented answers. Each needs a decision before the s
 5. **Pool replenishment.** The resilience pool is pre-funded; the refill cycle after a payout, and behaviour when the pool is drained mid-season, are undefined.
 6. **Registry synchronisation.** If a barangay needs three or four hubs for WiFi coverage, whether each carries a full registry copy and how they reconcile.
 7. **Reclaim window.** How long an unclaimed claimable balance stays outstanding before the barangay account can reclaim it.
-8. **Payout denomination.** §7 specifies a flat amount per severity tier but names neither the asset nor the figures. Needed before Stage 5.
-9. **Deployment partner.** No barangay or LGU has committed to a pilot. Field validation (₱4,300, two nodes) cannot be scheduled without one.
+8. **Deployment partner.** No barangay or LGU has committed to a pilot. Field validation (₱4,300, two nodes) cannot be scheduled without one.
 
 ### Resolved since v0.1
 
 - **Mesh carriage and the mesh-sim boundary.** Previously undefined: what actually crosses the TCP boundary to Meshtasticator. Now specified in §5.5 — the raw 84 bytes as Meshtastic data payload, driven by a Python process kept deliberately outside the TypeScript codebase for licence reasons.
 - **Decoder input bounds.** Previously unstated: what a decoder does with an out-of-range field value. Now split in two — decoding never rejects on field values, since every byte pattern is structurally valid, while `validateBody` handles semantics separately. Implemented and tested in `packages/core`.
+- **Payout denomination.** Previously unspecified: §7 named a flat amount per severity tier but neither the asset nor the figures. Now native XLM on Testnet — tier 1 / 2 / 3 = 10 / 25 / 50 XLM — chosen over a peso-pegged test asset to avoid an issuer account and a trustline per household. The real-world peso figure stays deliberately un-hardcoded: it is a policy decision a barangay sets against its own DRRM fund allocation. Recorded in [docs/BUILD-PLAN.md](docs/BUILD-PLAN.md) §6.
 - **Where verification happens — a correction, not just a resolution.** v0.1 stated signature/replay verification happens "at every hop." Building against a real Meshtasticator instance showed this isn't achievable without custom Meshtastic firmware: stock relays flood-forward any payload unparsed. §5.4, §5.5, and §9 now state the real design — verification at the hub and PWA, endpoints that already run our code — and G2's exit criterion is worded to match. The security property is unchanged: a forged alert never triggers a siren or a display anywhere it's checked. What changed is *where* "checked" happens.
 
 ---
