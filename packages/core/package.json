@@ -1,0 +1,11 @@
+{
+  "name": "@ligtas/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@stellar/stellar-sdk": "^17.0.1"
+  }
+}
