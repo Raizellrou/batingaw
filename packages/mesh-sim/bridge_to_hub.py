@@ -20,6 +20,7 @@ or node dist/index.js after building) and reachable at HUB_URL.
 Run with Meshtasticator's own venv Python:
   <meshtasticator>/.venv/Scripts/python.exe bridge_to_hub.py
 """
+import json
 import os
 import time
 
@@ -37,8 +38,20 @@ HUB_URL = os.environ.get("LIGTAS_HUB_URL", "http://localhost:3001")
 # "genuine" alert. Never hardcode this; the hub's demo issuer secret is
 # generated per session and passed in, never committed.
 ISSUER_SECRET = os.environ["LIGTAS_DEMO_ISSUER_SECRET"]
+# The hub only ever persists *accepted* alerts (alertService.ts's ingest()
+# never inserts a rejected packet), so GET /alerts can't supply the
+# forged/replay entries a captured demo bundle needs. This script captures
+# every packet it observes crossing the mesh -- accepted or not -- straight
+# from its own on_receive callback, and writes them to a bundle file itself.
+CAPTURE_OUTPUT = os.environ.get(
+    "LIGTAS_CAPTURE_OUTPUT",
+    os.path.join(driver.REPO_ROOT, "apps", "pwa", "public", "alert-bundle.json"),
+)
+ISSUERS_CONFIG = os.path.join(driver.REPO_ROOT, "packages", "hub", "config", "issuers.json")
 
 posted_hashes = set()
+captured_alerts = []  # AlertBundleEntry[] in receive order -- see docs/alert-bundle.schema.json
+current_label = None  # set right before each sendData so on_receive can tag what it captures
 
 
 def on_receive(packet, interface):
@@ -56,6 +69,9 @@ def on_receive(packet, interface):
     if packet_hex in posted_hashes:
         return  # already bridged this exact packet -- avoid a duplicate POST for a duplicate radio reception
     posted_hashes.add(packet_hex)
+    captured_alerts.append(
+        {"packetHex": packet_hex, "receivedAt": int(time.time()), "demoLabel": current_label}
+    )
 
     print(f"\n[bridge] hub node received {len(payload)} bytes -- POSTing to {HUB_URL}/alert")
     try:
@@ -76,6 +92,7 @@ try:
 
     print(f"\nBridge live. Watching hub node {HUB_NODE_ID}'s client interface, POSTing to {HUB_URL}.")
 
+    current_label = "genuine -- tier 2, puroks 3 and 4"
     alert = emit_alert(mode="genuine", sequence=1, issuer_secret=ISSUER_SECRET)
     print(f"Broadcasting genuine alert (seq=1) from node 0...")
     sim.get_node_iface_by_id(0).sendData(
@@ -83,16 +100,61 @@ try:
     )
     time.sleep(10)
 
-    forged = emit_alert(mode="forged", sequence=2, issuer_secret=ISSUER_SECRET)
-    print(f"\nBroadcasting FORGED alert (seq=2) from node 0...")
+    current_label = "genuine -- tier 2, water risen further"
+    escalation = emit_alert(mode="genuine", sequence=2, issuer_secret=ISSUER_SECRET, water_level=220)
+    print(f"\nBroadcasting genuine escalation alert (seq=2) from node 0...")
+    sim.get_node_iface_by_id(0).sendData(
+        bytes.fromhex(escalation["packetHex"]), destinationId="^all", portNum=driver.PRIVATE_APP_PORT, wantAck=False
+    )
+    time.sleep(10)
+
+    current_label = "forged -- signed by an impostor key, not the issuer above"
+    forged = emit_alert(mode="forged", sequence=3, issuer_secret=ISSUER_SECRET)
+    print(f"\nBroadcasting FORGED alert (seq=3) from node 0...")
     sim.get_node_iface_by_id(0).sendData(
         bytes.fromhex(forged["packetHex"]), destinationId="^all", portNum=driver.PRIVATE_APP_PORT, wantAck=False
     )
     time.sleep(10)
 
+    current_label = "replay -- sequence 1 again (already superseded by sequence 2), different body/hash from alert 0"
+    replay = emit_alert(mode="genuine", sequence=1, issuer_secret=ISSUER_SECRET)
+    print(f"\nBroadcasting REPLAY alert (seq=1 again) from node 0...")
+    sim.get_node_iface_by_id(0).sendData(
+        bytes.fromhex(replay["packetHex"]), destinationId="^all", portNum=driver.PRIVATE_APP_PORT, wantAck=False
+    )
+    time.sleep(10)
+
     print(f"\n[bridge] fetching {HUB_URL}/alerts to confirm what actually landed...")
-    bundle = requests.get(f"{HUB_URL}/alerts", timeout=5).json()
-    print(f"[bridge] hub reports {len(bundle['alerts'])} accepted alert(s) in its bundle.")
+    live_bundle = requests.get(f"{HUB_URL}/alerts", timeout=5).json()
+    print(f"[bridge] hub reports {len(live_bundle['alerts'])} accepted alert(s) in its bundle.")
+    if len(live_bundle["alerts"]) != 2:
+        print(
+            f"[bridge] WARNING: expected exactly 2 accepted alerts (the two genuine ones), "
+            f"got {len(live_bundle['alerts'])} -- check the hub's console log for rejections."
+        )
+
+    with open(ISSUERS_CONFIG) as f:
+        issuers = json.load(f)
+
+    captured_bundle = {
+        "schemaVersion": 1,
+        "generatedAt": int(time.time()),
+        "source": "captured",
+        "captureNote": (
+            f"Captured {time.strftime('%Y-%m-%d')} from a live Meshtasticator run via "
+            "bridge_to_hub.py against a real running packages/hub. The two genuine alerts "
+            "were accepted and stored by the hub; the forged and replayed packets crossed "
+            "the mesh identically (stock Meshtastic firmware forwards any payload) but were "
+            "rejected on signature/sequence -- their bytes are this script's own record of "
+            "what it broadcast, since the hub never persists a rejected packet."
+        ),
+        "issuers": issuers,
+        "alerts": captured_alerts,
+    }
+    with open(CAPTURE_OUTPUT, "w") as f:
+        json.dump(captured_bundle, f, indent=2)
+        f.write("\n")
+    print(f"[bridge] wrote captured bundle ({len(captured_alerts)} alerts) to {CAPTURE_OUTPUT}")
 
 finally:
     print("\nShutting down...")
