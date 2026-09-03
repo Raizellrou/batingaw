@@ -37,7 +37,7 @@ export interface EvaluatedAlert {
  * the same decision packages/hub will make; the PWA doesn't get a second,
  * looser standard just because it's running in a browser.
  */
-export async function evaluateBundle(bundle: AlertBundle): Promise<EvaluatedAlert[]> {
+export function evaluateBundle(bundle: AlertBundle): EvaluatedAlert[] {
   const issuerByIndex = new Map(bundle.issuers.map((i) => [i.issuerIndex, i.issuerPublicKey]))
   const guard = new ReplayGuard()
   const results: EvaluatedAlert[] = []
@@ -58,7 +58,7 @@ export async function evaluateBundle(bundle: AlertBundle): Promise<EvaluatedAler
       continue
     }
 
-    const hashHex = toHex(await alertHash(bodyBytes))
+    const hashHex = toHex(alertHash(bodyBytes))
     const decision = guard.evaluate(hashHex, body.issuerIndex, body.sequence)
     const outcome: AlertOutcome = decision === 'accept' ? 'accepted' : decision === 'duplicate' ? 'duplicate' : 'rejected_replay'
 

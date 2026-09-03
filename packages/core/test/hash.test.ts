@@ -15,26 +15,34 @@ const body: AlertBody = {
 };
 
 describe("alertHash", () => {
-  it("is 32 bytes — exactly a Stellar MEMO_HASH", async () => {
-    const hash = await alertHash(encodeBody(body));
+  it("is 32 bytes — exactly a Stellar MEMO_HASH", () => {
+    const hash = alertHash(encodeBody(body));
     expect(hash.length).toBe(ALERT_HASH_LENGTH);
   });
 
-  it("is deterministic for the same body", async () => {
+  it("is deterministic for the same body", () => {
     const bodyBytes = encodeBody(body);
-    const a = await alertHash(bodyBytes);
-    const b = await alertHash(bodyBytes);
-    expect(toHex(a)).toBe(toHex(b));
+    expect(toHex(alertHash(bodyBytes))).toBe(toHex(alertHash(bodyBytes)));
   });
 
-  it("changes if a single body byte changes", async () => {
+  it("changes if a single body byte changes", () => {
     const bodyBytes = encodeBody(body);
     const tampered = bodyBytes.slice();
     tampered[12] ^= 0x01; // flip a bit in sequence
 
-    const original = toHex(await alertHash(bodyBytes));
-    const changed = toHex(await alertHash(tampered));
+    expect(toHex(alertHash(tampered))).not.toBe(toHex(alertHash(bodyBytes)));
+  });
 
-    expect(changed).not.toBe(original);
+  /**
+   * The reason this module doesn't use `crypto.subtle`: it is undefined
+   * outside a secure context, which is precisely how the hub serves the PWA
+   * in the field (plain HTTP, LAN IP, no certificate). This pins the
+   * pure-JS implementation to the same answer Web Crypto gives, so the
+   * swap can never silently change an alert's identity.
+   */
+  it("matches crypto.subtle's SHA-256 for the same body", async () => {
+    const bodyBytes = encodeBody(body);
+    const viaWebCrypto = new Uint8Array(await crypto.subtle.digest("SHA-256", bodyBytes as BufferSource));
+    expect(toHex(alertHash(bodyBytes))).toBe(toHex(viaWebCrypto));
   });
 });

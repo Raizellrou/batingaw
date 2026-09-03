@@ -36,7 +36,7 @@ if (verified === null) {
 }
 
 const bodyBytes = packet.subarray(0, 20);
-const hash = toHex(await alertHash(bodyBytes));
+const hash = toHex(alertHash(bodyBytes));
 
 const lastSeq = Number(argValue("last-seq") ?? -1);
 const guard = new ReplayGuard();

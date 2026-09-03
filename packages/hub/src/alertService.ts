@@ -41,7 +41,7 @@ export class AlertService {
    * verifyBody) shared across all three; this method is orchestration, not
    * a second copy of the logic.
    */
-  async ingest(packetHex: string): Promise<IngestDecision> {
+  ingest(packetHex: string): IngestDecision {
     let packet: Uint8Array;
     try {
       packet = bytesFromHex(packetHex);
@@ -64,7 +64,7 @@ export class AlertService {
       return { decision: "rejected_signature" };
     }
 
-    const hashHex = toHex(await alertHash(bodyBytes));
+    const hashHex = toHex(alertHash(bodyBytes));
     const replayDecision = this.guard.evaluate(hashHex, body.issuerIndex, body.sequence);
     if (replayDecision === "duplicate") return { decision: "duplicate" };
     if (replayDecision === "replay") return { decision: "rejected_replay" };

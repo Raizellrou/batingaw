@@ -1,18 +1,22 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+
 /** PRD §5.2 — 32-byte alert identity, doubles as the Stellar `MEMO_HASH` value. */
 export const ALERT_HASH_LENGTH = 32;
 
 /**
- * `alertHash = SHA-256(body)`. Uses Web Crypto (`crypto.subtle`) rather than
- * `node:crypto` so this module runs unmodified in the PWA as well as Node —
- * both expose the same `crypto.subtle.digest` global.
+ * `alertHash = SHA-256(body)`.
+ *
+ * Deliberately *not* Web Crypto (`crypto.subtle`): that is only defined in
+ * secure contexts, so it is missing over plain HTTP on a LAN address —
+ * which is exactly how PRD §9's hub serves this code to residents, from its
+ * own WiFi at an IP address with no certificate and no internet to get one.
+ * A verifier that silently loses its hash function in the field is worse
+ * than useless, so hashing here is a pure-JS implementation that behaves
+ * identically in every context (verified against `crypto.subtle` for the
+ * same inputs).
  */
-export async function alertHash(body: Uint8Array): Promise<Uint8Array> {
-  // TS 5.7 made TypedArrays generic over their buffer (ArrayBuffer |
-  // SharedArrayBuffer), which no longer structurally matches lib.dom's
-  // `BufferSource`. The cast is safe: every Uint8Array this module ever
-  // sees is backed by a plain ArrayBuffer, never a SharedArrayBuffer.
-  const digest = await crypto.subtle.digest("SHA-256", body as BufferSource);
-  return new Uint8Array(digest);
+export function alertHash(body: Uint8Array): Uint8Array {
+  return sha256(body);
 }
 
 /** Lowercase hex, used as the outbox primary key and mesh dedupe key. */

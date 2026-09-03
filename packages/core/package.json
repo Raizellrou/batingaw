@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.scripts.json"
   },
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
     "@stellar/stellar-sdk": "^17.0.1"
   },
   "devDependencies": {
