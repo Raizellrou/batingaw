@@ -76,6 +76,12 @@ importers:
       '@ligtas/core':
         specifier: workspace:*
         version: link:../core
+      '@ligtas/stellar':
+        specifier: workspace:*
+        version: link:../stellar
+      '@stellar/stellar-sdk':
+        specifier: ^17.0.1
+        version: 17.0.1(debug@4.4.3)
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3

@@ -5,10 +5,13 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "start": "node src/index.ts"
+    "start": "node src/index.ts",
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@ligtas/core": "workspace:*",
+    "@ligtas/stellar": "workspace:*",
+    "@stellar/stellar-sdk": "^17.0.1",
     "better-sqlite3": "^13.0.3",
     "express": "^5.2.1"
   },

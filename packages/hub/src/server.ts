@@ -1,7 +1,15 @@
 import express, { type Express } from "express";
+import type { Keypair } from "@stellar/stellar-sdk/base";
+import type Database from "better-sqlite3";
 import { AlertService } from "./alertService.js";
+import { drainOutbox } from "./drain.js";
 
-export function createServer(alerts: AlertService): Express {
+export interface DrainConfig {
+  db: Database.Database;
+  issuer: Keypair;
+}
+
+export function createServer(alerts: AlertService, drain?: DrainConfig): Express {
   const app = express();
   app.use(express.json());
 
@@ -25,6 +33,18 @@ export function createServer(alerts: AlertService): Express {
 
   app.get("/alerts", (_req, res) => {
     res.json(alerts.toBundle());
+  });
+
+  // PRD Section 6.2 -- drains the outbox to Stellar Testnet. Manual trigger
+  // for demos/tests; index.ts also runs this on an interval when a hub
+  // Stellar secret is configured.
+  app.post("/drain", async (_req, res) => {
+    if (!drain) {
+      res.status(503).json({ error: "drain not configured -- set LIGTAS_HUB_STELLAR_SECRET" });
+      return;
+    }
+    const results = await drainOutbox(drain.db, drain.issuer);
+    res.json({ results });
   });
 
   return app;

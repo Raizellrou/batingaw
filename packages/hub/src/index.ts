@@ -1,20 +1,46 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { Keypair } from "@stellar/stellar-sdk/base";
 import { openDb } from "./db.js";
 import { loadIssuers } from "./issuers.js";
 import { AlertService } from "./alertService.js";
-import { createServer } from "./server.js";
+import { createServer, type DrainConfig } from "./server.js";
+import { drainOutbox } from "./drain.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3001);
 const DB_PATH = process.env.LIGTAS_DB_PATH ?? join(HERE, "..", "hub.sqlite");
 const ISSUERS_PATH = process.env.LIGTAS_ISSUERS_PATH ?? join(HERE, "..", "config", "issuers.json");
+// The hub's own Stellar account -- distinct from the field issuer keys in
+// issuers.json, which only ever verify alert signatures. This is the
+// account PRD Section 7's anchor payment is sent from and to. Optional:
+// without it the hub still does everything except drain the outbox, which
+// only matters once connectivity returns anyway (PRD Section 6.2).
+const HUB_STELLAR_SECRET = process.env.LIGTAS_HUB_STELLAR_SECRET;
+const DRAIN_INTERVAL_MS = Number(process.env.LIGTAS_DRAIN_INTERVAL_MS ?? 60_000);
 
 const db = openDb(DB_PATH);
 const issuers = loadIssuers(ISSUERS_PATH);
 const alerts = new AlertService(db, issuers);
-const app = createServer(alerts);
+
+let drainConfig: DrainConfig | undefined;
+if (HUB_STELLAR_SECRET) {
+  const issuer = Keypair.fromSecret(HUB_STELLAR_SECRET);
+  drainConfig = { db, issuer };
+  setInterval(() => {
+    drainOutbox(db, issuer)
+      .then((results) => {
+        if (results.length > 0) console.log(`[drain] ${JSON.stringify(results)}`);
+      })
+      .catch((err) => console.error("[drain] run failed:", err));
+  }, DRAIN_INTERVAL_MS);
+}
+
+const app = createServer(alerts, drainConfig);
 
 app.listen(PORT, () => {
-  console.log(`hub listening on :${PORT} (db: ${DB_PATH}, ${issuers.size} issuer(s) loaded)`);
+  console.log(
+    `hub listening on :${PORT} (db: ${DB_PATH}, ${issuers.size} issuer(s) loaded, ` +
+      `drain: ${drainConfig ? `every ${DRAIN_INTERVAL_MS}ms` : "disabled -- no LIGTAS_HUB_STELLAR_SECRET"})`,
+  );
 });
