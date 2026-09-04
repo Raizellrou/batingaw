@@ -1,0 +1,599 @@
+# LIGTAS — Onboarding & Handoff Guide
+
+For **Juniene** (or anyone picking this repo up on a fresh machine). Written 4 September 2026,
+after Stage 3's build work landed on `development-branch`.
+
+Read this top to bottom once before running anything. Sections 1–4 get you running;
+5–7 are the audit of what actually exists versus what the older docs claim; 8–11 are how
+we work from here (branching, PRs, rules that must not be broken).
+
+Companion docs — read in this order after this one:
+
+1. [`../README.md`](../README.md) — the pitch. What the system is and why.
+2. [`../LIGTAS-PRD.md`](../LIGTAS-PRD.md) — the spec. Packet format, hub design, threat model, milestones.
+3. [`BUILD-PLAN.md`](BUILD-PLAN.md) — what gets built when. **Its §1 status table is stale — see §6 below.**
+4. Each package's own `README.md` — these are the most accurate docs in the repo.
+
+---
+
+## 1. Prerequisites
+
+Install these before touching the repo. The middle column is what the code was built and
+verified against; the right column is the real floor.
+
+| Tool | Verified on | Minimum | Notes |
+|---|---|---|---|
+| Node.js | 24.7.0 | 20 (`package.json` engines) | **Use 24.x.** `better-sqlite3` 13.0.3 ships a prebuilt binary per Node ABI; 24 is the one proven here, so you avoid a native compile. |
+| pnpm | 11.25.0 | 9 | `corepack enable`, then `corepack prepare pnpm@latest --activate`. Or `npm i -g pnpm`. **Never use npm or yarn in this repo** — it is a pnpm workspace and the lockfile is `pnpm-lock.yaml`. |
+| Git | 2.53 | any recent | — |
+| Python | 3.13.7 | 3.11 | Only for `packages/mesh-sim`. And even there you run *Meshtasticator's own venv Python*, not this one — see §4.3. |
+| Docker Desktop | — | — | Only for `packages/mesh-sim`. Must be **running**, not just installed. |
+
+Optional, only if you touch `apps/sensor-wokwi`:
+
+- A [Wokwi](https://wokwi.com) account (browser), or the Wokwi VS Code extension.
+- `arduino-cli` plus the `esp32:esp32` core 3.3.11, if you want to compile the sketch locally.
+
+You do **not** need: Rust, any Stellar CLI, Soroban tooling, or any physical hardware.
+See §10 — several of those are hard-prohibited.
+
+---
+
+## 2. Getting the code
+
+The repo is `https://github.com/Raizellrou/ligtas.git`.
+
+```bash
+git clone https://github.com/Raizellrou/ligtas.git
+```
+
+```bash
+cd ligtas && git checkout development-branch
+```
+
+### Read this before you do anything else
+
+**`main` is 14 commits behind and is NOT where the work is.** `main` is the
+submission/stable branch — it stops at "Add LIGTAS PRD". Every package built so far lives
+on `development-branch`.
+
+| Branch | Commit | What it is | Use it? |
+|---|---|---|---|
+| `development-branch` | `12c4a4f` | **The real trunk.** All Stage 3 work. | Yes — branch from here, PR back into here. |
+| `main` | `2e05adf` | Submission branch, 14 commits behind. | No. Never commit here, never branch from here. |
+| `stage3/core-packet-codec` | `4e6af48` | Dead feature branch, already merged forward and superseded. | No. Ignore it. |
+
+Point your local branch at the right remote so you cannot drift:
+
+```bash
+git branch --set-upstream-to=origin/development-branch development-branch
+```
+
+Confirm you are in the right place — this must print `12c4a4f` or newer:
+
+```bash
+git log --oneline -1
+```
+
+### Two files you will NOT get from the clone
+
+`CLAUDE.md` and `docs/master.md` exist on Charles's machine but are **untracked** — they
+were deliberately removed from the repo in commit `d100ccd` ("Remove dev context files
+from submission repo") and never re-added.
+
+- `CLAUDE.md` is the per-session context file Claude Code auto-loads. Without it, Claude on
+  your machine will not know the hard constraints in §10 and *will* suggest things that
+  break them (Soroban, GPL Meshtastic libraries, network calls inside `packages/core`).
+- `docs/master.md` is the longer-form architecture and threat-model reference.
+
+**Ask Charles to send you both files directly.** Put `CLAUDE.md` at the repo root and
+`master.md` in `docs/`. They are untracked rather than gitignored, so they will show up in
+`git status` — do not commit them without asking first (see §7).
+
+---
+
+## 3. First-run setup (about 10 minutes)
+
+From the repo root, on `development-branch`:
+
+```bash
+pnpm install
+```
+
+If pnpm asks to approve build scripts, approve `better-sqlite3` and `esbuild`
+(`pnpm approve-builds`). Both are already allowlisted in `pnpm-workspace.yaml`, so normally
+it will not ask.
+
+### Build order matters
+
+The packages depend on each other's **compiled `dist/`**, not their sources. Build in this
+exact order or you will get module-not-found errors:
+
+```bash
+pnpm --filter @ligtas/core build && pnpm --filter @ligtas/stellar build && pnpm --filter @ligtas/hub build
+```
+
+Why: `@ligtas/hub` imports `@ligtas/stellar` (in `src/drain.ts`) and `@ligtas/core`, and
+both resolve through their `dist/index.js`. `@ligtas/core` is the root of the dependency
+graph — build it first, always.
+
+### Verify the install
+
+```bash
+pnpm test
+```
+
+Expected: **5 test files, 30 tests passing** (Vitest, all in `packages/core`). If you see
+29, you are on an older commit — pull.
+
+Then confirm the hub actually starts. PowerShell:
+
+```powershell
+$env:PORT=3001; node packages/hub/dist/index.js
+```
+
+bash / macOS / Linux:
+
+```bash
+PORT=3001 node packages/hub/dist/index.js
+```
+
+You should see:
+
+```
+hub listening on :3001 (db: ...hub.sqlite, 1 issuer(s) loaded, drain: disabled -- no LIGTAS_HUB_STELLAR_SECRET)
+```
+
+In another terminal:
+
+```bash
+curl http://localhost:3001/health && curl http://localhost:3001/alerts
+```
+
+`/health` returns `{"ok":true}`. `/alerts` returns an `AlertBundle` with an empty `alerts`
+array — empty is correct on a fresh database. **`drain: disabled` is also correct** and
+expected until you set a Stellar secret (§4.4).
+
+### Run the PWA
+
+```bash
+pnpm --filter @ligtas/pwa dev
+```
+
+Opens on http://localhost:5173. It runs against the captured bundle at
+`apps/pwa/public/alert-bundle.json` — real signed packets recorded from an actual
+Meshtasticator run, including a forged and a replayed one — and verifies every entry in the
+browser through the real `@ligtas/core`. Three role tabs: Resident, Tester, How it works.
+
+`@ligtas/core` must be built first (it is a workspace dependency of the PWA). If the PWA
+throws on import, that is what you forgot.
+
+---
+
+## 4. Running each piece
+
+### 4.1 `packages/core` — the pure offline layer
+
+Nothing to run; it is a library plus two CLI bridges used by the Python mesh scripts.
+
+```bash
+node packages/core/dist/scripts/emit-alert.js --sequence 1
+```
+
+```bash
+node packages/core/dist/scripts/verify-alert.js --packet-hex <168 hex chars> --issuer-public-key <G...> --last-seq -1
+```
+
+`emit-alert.js` options: `--hazard`, `--severity`, `--purok-bitmap`, `--sequence`,
+`--water-level`, `--issuer-index`, `--issuer-secret`, `--mode <genuine|forged|tampered>`.
+The `forged` and `tampered` modes are how you produce packets a verifier *should* reject —
+use them rather than hand-corrupting bytes.
+
+**Gotcha:** `emit-alert --mode genuine` **with no `--issuer-secret` signs with a fresh
+random keypair**, which the hub will correctly reject. This already bit us once — it is
+bug #3 in `packages/mesh-sim/README.md`. A "genuine" packet is only genuine if it is signed
+by the secret matching the public key the hub has configured for that `issuerIndex`.
+`issuerIndex` in the packet body is just a config value; it does not tie the packet to any
+keypair.
+
+### 4.2 `packages/hub` — Express + SQLite outbox
+
+Full docs: [`../packages/hub/README.md`](../packages/hub/README.md).
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `PORT` | `3001` | HTTP port |
+| `LIGTAS_DB_PATH` | `packages/hub/hub.sqlite` | SQLite file (gitignored) |
+| `LIGTAS_ISSUERS_PATH` | `packages/hub/config/issuers.json` | Authorised issuer public keys |
+| `LIGTAS_HUB_STELLAR_SECRET` | *(unset)* | The hub's own Testnet secret. Unset means the drain worker is off and `POST /drain` returns 503. |
+| `LIGTAS_DRAIN_INTERVAL_MS` | `60000` | Auto-drain interval, when the secret is set |
+
+Routes: `POST /alert` (body `{ "packetHex": "..." }`), `GET /alerts`, `POST /drain`,
+`GET /health`. `POST /alert` returns a `decision` of `accepted`, `rejected_signature`,
+`rejected_unknown_issuer`, `rejected_replay`, `duplicate`, or `malformed`.
+
+**Known limitation, do not fight it:** there is no `tsx`-style direct-run path. You must
+`pnpm --filter @ligtas/hub build` and run `node packages/hub/dist/index.js`. Running
+`node packages/hub/src/index.ts` will fail — its `@ligtas/core` import expects compiled JS.
+
+`packages/hub/config/issuers.json` is committed and holds **only public keys**. That is
+safe and deliberate: a reproducible demo needs it. Never put a secret key in it.
+
+### 4.3 `packages/mesh-sim` — the LoRa mesh simulation (Python)
+
+Full docs: [`../packages/mesh-sim/README.md`](../packages/mesh-sim/README.md). Read its
+"Two real bugs found building this" section before changing the topology or driver logic.
+
+Setup:
+
+1. Docker Desktop running.
+2. Clone [Meshtasticator](https://github.com/meshtastic/Meshtasticator) **as a sibling of
+   this repo's parent folder** (`../../../Meshtasticator` relative to `packages/mesh-sim`).
+   Set `MESHTASTICATOR_PATH` if you put it elsewhere.
+3. Set up Meshtasticator's own venv per its README: `pip install -r requirements.txt`, plus
+   `pip install docker`.
+4. `packages/core` must be compiled.
+
+Run with **Meshtasticator's venv Python**, not yours — the scripts import its
+`lib.interactive` module directly rather than reimplementing radio propagation:
+
+```bash
+cd packages/mesh-sim && <path-to-meshtasticator>/.venv/Scripts/python.exe run_relay_test.py
+```
+
+| Script | What it does |
+|---|---|
+| `run_relay_test.py` | The Track A proof: multi-hop delivery, relay killed mid-run (kill independently verified), forged and replayed packets rejected. 9/9 checks. |
+| `bridge_to_hub.py` | Mesh to live hub over HTTP. Needs the hub already running, and `LIGTAS_DEMO_ISSUER_SECRET` set. |
+| `debug_propagation.py` | Sends one packet and dumps everything observed. Use this when something breaks. |
+| `topology.yaml` | The 4-node layout. Coordinates are tuned against the simulator's real antenna-range model — do not casually retune them. |
+
+`bridge_to_hub.py` environment: `LIGTAS_HUB_URL` (default `http://localhost:3001`),
+`LIGTAS_DEMO_ISSUER_SECRET` (**required**), `LIGTAS_CAPTURE_OUTPUT` (defaults to writing
+`apps/pwa/public/alert-bundle.json` — note that a run overwrites the committed demo bundle
+the PWA ships with, so check `git diff` afterwards).
+
+### 4.4 `packages/stellar` — Horizon Testnet anchoring
+
+Full docs: [`../packages/stellar/README.md`](../packages/stellar/README.md).
+
+This is **the only package in the repo allowed to import Horizon.** See §10.
+
+```bash
+node packages/stellar/dist/scripts/anchor-alert.js --alert-hash <64 hex chars> --fund
+```
+
+`--fund` calls Friendbot first (needed for a fresh account). `--secret <S...>` reuses an
+existing one. Already proven live: transaction `997c8374…e78b1` on Testnet, with the memo
+fetched independently from Horizon and matched against the locally recomputed hash exactly.
+
+### 4.5 `apps/sensor-wokwi` — ESP32 sensor node
+
+Full docs: [`../apps/sensor-wokwi/README.md`](../apps/sensor-wokwi/README.md).
+
+Open the folder in Wokwi (`diagram.json` + `wokwi.toml` + `sensor-wokwi.ino`). A
+potentiometer stands in for the river gauge; the sketch does **real** SHA-256 (ESP32
+mbedtls) plus Ed25519 (Monocypher's RFC 8032 module, deliberately *not* Monocypher's
+BLAKE2b default, which would produce a non-Stellar-compatible signature) and prints a real
+84-byte signed packet as hex.
+
+Verified: the signature matches `@stellar/stellar-sdk` byte-for-byte, and the sketch
+compiles clean against Arduino-ESP32 core 3.3.11. **Not verified:** the actual Wokwi
+runtime — WiFi/NTP timing, `analogRead` against the simulated potentiometer, the
+`diagram.json` wiring. If you have a Wokwi session spare, closing that gap is a cheap,
+honest win.
+
+The `DEMO_SEED` in the sketch is hardcoded and Testnet-only. It is intentionally a
+*different* keypair from the hub's demo issuer — this app is standalone by design.
+
+### 4.6 `apps/pwa` — the resident PWA
+
+Deployed on Vercel from Charles's account. `.vercel/` is gitignored, so you will not have
+the project link. If you need to deploy, ask Charles to add you to the Vercel project, then
+`vercel link`. Do **not** create a second project.
+
+Build config lives in `vercel.json` at the repo root:
+`pnpm --filter @ligtas/core build && pnpm --filter @ligtas/pwa build`, output directory
+`apps/pwa/dist`.
+
+---
+
+## 5. Secrets you need from Charles
+
+None of these are in the repo, and none of them ever should be. Get them over a private
+channel, keep them in your shell environment or a local `.env` (already gitignored) —
+**never commit them, and never paste them into an issue or PR.**
+
+| Secret | Needed for | Note |
+|---|---|---|
+| `LIGTAS_DEMO_ISSUER_SECRET` | `bridge_to_hub.py` | Must match `issuerPublicKey` `GDOOR3ZR…LRCF` in `packages/hub/config/issuers.json`, or the hub correctly rejects everything as `rejected_signature`. |
+| `LIGTAS_HUB_STELLAR_SECRET` | The hub drain worker | The hub's own Testnet account. You can also just generate your own and Friendbot-fund it — nothing depends on reusing his. |
+| Vercel project access | Deploying the PWA | Only if you need to deploy. |
+| `CLAUDE.md` + `docs/master.md` | Working with Claude Code | Untracked files — see §2. |
+
+All Stellar work is **Testnet only**. Generating your own keypairs with `Keypair.random()`
+plus Friendbot is free and encouraged for local work.
+
+---
+
+## 6. Audit: what is actually built (as of `12c4a4f`)
+
+I checked the code against the docs. **`docs/BUILD-PLAN.md` §1 is out of date** — it was
+written 2 September and four commits landed after it. Trust this table over that one.
+
+| Package | Real state | Evidence |
+|---|---|---|
+| `packages/core` | **Done.** Packet codec (`DataView`, big-endian, 84 bytes), SEP-53 sign/verify, `ReplayGuard`, `AlertBundle` types, `emit-alert` / `verify-alert` CLIs. 30 Vitest tests passing, typecheck clean. | `pnpm test`, re-verified today |
+| `packages/mesh-sim` | **Done.** 9/9 checks against a live Meshtasticator: multi-hop delivery, relay killed mid-run with the kill independently verified, forged and replayed packets crossing the mesh and rejected at verification. `bridge_to_hub.py` proven against a real running hub. | `55c52b7`, `4e6af48` |
+| `packages/hub` | **Done.** Express + SQLite (WAL, `synchronous=FULL`). `POST /alert` verifies via `@ligtas/core`; `GET /alerts` serves a schema-validated live bundle; `POST /drain` anchors the outbox. Server start, `/health` and `/alerts` re-verified today. | `4e6af48`, `041c137` |
+| `packages/stellar` | **Done** — BUILD-PLAN wrongly says "not started". Horizon Testnet client, Friendbot funding, `anchorAlertHash` with `MEMO_HASH`. Proven live on Testnet with the memo decoded independently from Horizon. | `ab5a6b5` |
+| **Hub drain worker** | **Done** — `packages/stellar/README.md` wrongly says "not yet built". Reconciles `submitted` rows before picking up `pending` ones; records the transaction hash before awaiting confirmation. Verified live including a simulated mid-drain crash, which reconciled without double-anchoring. | `041c137`, `packages/hub/src/drain.ts` |
+| `apps/sensor-wokwi` | **Built** — BUILD-PLAN wrongly says "not started" — with one honest gap: real on-device Ed25519 signing cross-checked against the Stellar SDK, sketch compiles clean, but the Wokwi *runtime* was never actually run. | `be9ad22` |
+| `apps/pwa` | **Stage 3 done, Stage 4 not.** Vite + React 19 + Tailwind v4, three roles (Resident / Tester / How it works), real in-browser verification, deployed to Vercel. No service worker and no IndexedDB yet. | `f99b056`, `82caa0d`, `12c4a4f` |
+
+### Doc drift to fix — small, and worth doing early
+
+These statements are wrong in the repo right now. Fixing them makes a good first PR, to get
+the workflow under your belt on something low-risk:
+
+1. `docs/BUILD-PLAN.md` §1 — "Not started: `packages/stellar`, `apps/sensor-wokwi`" is
+   false. Both shipped. It also says "29 Vitest tests"; it is 30.
+2. `packages/stellar/README.md` "Not yet built" — the hub drain worker **is** built.
+3. `CLAUDE.md` (untracked) — describes `apps/pwa` as using `vite-plugin-pwa` and `idb`.
+   **Neither is in `apps/pwa/package.json`.** That is Stage 4 work that has not happened yet.
+4. `apps/pwa/README.md` is still the stock Vite template boilerplate. Never replaced.
+5. `LIGTAS-PRD.md` §11 also says 29 tests.
+
+---
+
+## 7. What is left to build — your actual runway
+
+Sourced from `docs/BUILD-PLAN.md` §4–5 and `LIGTAS-PRD.md` §11–12, corrected against what
+is really in the tree. Roughly in dependency order.
+
+### Stage 4 · Refine (Version 1)
+
+Exit criterion: *a phone in airplane mode shows the correct purok instruction; an alert hash
+appears on Stellar Expert and matches the locally recomputed hash.*
+
+| # | Work | State | Notes |
+|---|---|---|---|
+| 4.1 | `packages/stellar` anchoring | Done | — |
+| 4.2 | Hub drain worker | Done | — |
+| 4.3 | **PWA offline hardening** | **Not started — this is the open Stage 4 item** | Add `vite-plugin-pwa` (service worker) and `idb` (persist cached alerts). BUILD-PLAN is explicit: verify with a **real device in airplane mode**, not devtools throttling. |
+| 4.4 | Proof capture | Partial | The Stellar-side proof exists in `packages/stellar/README.md`. Still want Stellar Expert screenshots collected somewhere presentable, with the on-chain hash checked against the locally recomputed one. |
+
+**4.3 is the natural first feature for you.** It is self-contained, it is frontend, nothing
+else blocks on it, and it is the one thing standing between the repo and Stage 4's exit
+criterion.
+
+### Stage 5 · Launch (MVP)
+
+| # | Work | State | Notes |
+|---|---|---|---|
+| 5.1 | **Payout flow** | Not started | One `createClaimableBalance` per matched household. Flat by severity tier — **tier 1 = 10 XLM, tier 2 = 25 XLM, tier 3 = 50 XLM**, native XLM on Testnet (decided in BUILD-PLAN §6). The alerts table already has an unused `payout_status` column defaulting to `'none'`. |
+| 5.2 | **Registry wiring** | Not started | A households table (household ID → purok → Stellar address), populated ahead of time; filter the alert's purok bitmap down to matching addresses. `docs/master.md` flags an open TODO on whether this lives in the hub's SQLite or a separate store. |
+| 5.3 | **Idempotency hardening** | Not started | PRD §7 calls this *the highest-risk correctness surface in the system.* Dedicated tests: run the drain, interrupt it, re-run it, assert no double payment. Do not treat this as optional. |
+| 5.4 | Demo recording | Not started | The README's full definition of done, start to finish, uncut. |
+
+Prerequisite: demo household accounts must be **Friendbot-funded before this stage** — each
+claimable balance raises the sponsoring account's reserve requirement, and the accounts have
+to exist first.
+
+### Blocking open questions
+
+`LIGTAS-PRD.md` §12 carries eight open questions. Two matter for your runway:
+
+- **#7 Reclaim window** — how long an unclaimed claimable balance stays outstanding before
+  the barangay account can reclaim it. **Blocks Stage 5 (5.1).** Needs a decision from both
+  of you, then recorded in `BUILD-PLAN.md` §6 the same way payout denomination was.
+- **#8 Payout denomination** — already resolved (native XLM, 10/25/50). No action.
+
+The other six (duty cycle, sensor trust, key lifecycle, threshold ownership, pool
+replenishment, registry synchronisation, deployment partner) are documented-not-blocking.
+Do not invent answers — the PRD's stance is that carrying them forward honestly beats
+fabricating a resolution.
+
+### Also worth doing
+
+- Close the doc drift listed in §6.
+- Replace `apps/pwa/README.md`'s template boilerplate with something real.
+- Run `apps/sensor-wokwi` in an actual Wokwi session to close its one honest gap.
+- Decide whether `CLAUDE.md` and `docs/master.md` should be committed to
+  `development-branch`. They were removed from the *submission* repo, which `main` is — but
+  the dev branch arguably should carry them so both machines share the same constraints.
+  **Ask Charles before committing them.**
+
+---
+
+## 8. How we work: branching and PRs
+
+**Everything goes to `development-branch`. Nothing goes to `main`.**
+
+### Starting a feature
+
+Always branch from an up-to-date `development-branch`:
+
+```bash
+git checkout development-branch && git pull origin development-branch && git checkout -b stage4/pwa-offline
+```
+
+Naming convention, matching the existing `stage3/core-packet-codec`:
+`stage<N>/<short-kebab-description>`.
+
+| Planned work | Branch name |
+|---|---|
+| PWA service worker + idb (4.3) | `stage4/pwa-offline` |
+| Proof capture (4.4) | `stage4/proof-capture` |
+| Claimable-balance payouts (5.1) | `stage5/payout-flow` |
+| Household registry (5.2) | `stage5/registry` |
+| Idempotency tests (5.3) | `stage5/idempotency-tests` |
+| Doc drift fixes (§6) | `docs/status-drift` |
+
+### While working
+
+Commit in small, self-describing steps. Match the existing commit style — imperative mood,
+one line, saying what changed and why it matters:
+
+> `Add hub drain worker: outbox to Stellar Testnet, verified live`
+>
+> `Add tester + how-it-works roles to the PWA; fix hashing outside secure contexts`
+
+Push early so the branch exists on the remote and Charles can see it:
+
+```bash
+git push -u origin stage4/pwa-offline
+```
+
+### Before you open a PR — the checklist
+
+Run all of it. Every item.
+
+```bash
+pnpm test && pnpm --filter @ligtas/core build && pnpm --filter @ligtas/stellar build && pnpm --filter @ligtas/hub build && pnpm --filter @ligtas/pwa build && pnpm --filter @ligtas/pwa lint
+```
+
+Then:
+
+- [ ] `pnpm test` shows 30 passing.
+- [ ] Lint is clean apart from one **pre-existing** warning
+      (`src/lib/useSimulation.ts:48` — `react(use-memo)`). That one is not yours; a warning
+      is not an error and oxlint still exits 0. Do not add new ones.
+- [ ] `git status` is clean — no stray `dist/`, `*.sqlite`, `.env`, or `__pycache__`. All
+      are gitignored, but check anyway.
+- [ ] **No secret keys anywhere in the diff.** Search for them:
+      `git diff development-branch | grep -iE "S[A-Z2-7]{55}"` — should return nothing.
+- [ ] If you ran `bridge_to_hub.py`, check whether it overwrote
+      `apps/pwa/public/alert-bundle.json`. Committing a fresh capture is fine and sometimes
+      right — committing one by accident is not.
+- [ ] If you touched `packages/core`, you added tests. It is the only tested package and it
+      must stay that way.
+- [ ] If you touched the wire format in `packages/core/src/codec.ts`, you **also** updated
+      `apps/sensor-wokwi/sensor-wokwi.ino` and the byte-layout table in its README —
+      different languages, no shared type, kept in sync by hand.
+- [ ] If a claim in a README is now false, you fixed that README in the same PR.
+- [ ] You did not add a GPL dependency (§10).
+
+### Opening the PR
+
+```bash
+gh pr create --base development-branch --head stage4/pwa-offline
+```
+
+**`--base development-branch` — never omit it.** GitHub will default the base to `main`,
+which is wrong. To protect against that permanently, the repo's default branch can be
+changed — but that affects both of you, so **ask Charles first**:
+
+```bash
+gh repo edit Raizellrou/ligtas --default-branch development-branch
+```
+
+A PR description should say three things: what changed, how you verified it *for real*, and
+what you did **not** verify. That last part is the house style throughout this repo — see
+any package README. Claiming more than you proved is the specific failure mode the PRD was
+written to avoid.
+
+### Staying in sync
+
+Before starting anything new, and on any day Charles has pushed:
+
+```bash
+git checkout development-branch && git pull origin development-branch
+```
+
+If your feature branch has drifted behind:
+
+```bash
+git checkout stage4/pwa-offline && git rebase development-branch
+```
+
+Prefer `rebase` while the branch is unpushed or only yours. Once someone else has pulled it,
+use `git merge development-branch` instead so you do not rewrite shared history.
+
+### Who owns what (suggested, to avoid collisions)
+
+Stage 3 ran as two parallel tracks and that worked. Same idea:
+
+- **Juniene** — `apps/pwa` (4.3, 4.4). Self-contained, frontend, unblocked today.
+- **Charles** — `packages/hub` and `packages/stellar` (5.1–5.3).
+
+If either of you needs to touch `packages/core`, say so before starting — it is the one
+package everything else depends on.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Cannot find module '@ligtas/core'` | Not built, or built out of order | Build core first, then stellar, then hub (§3) |
+| `node packages/hub/src/index.ts` fails | Known limitation — no direct-run path | Build first, run `dist/index.js` |
+| Hub logs `drain: disabled` | `LIGTAS_HUB_STELLAR_SECRET` unset | Expected. Set it only when working on anchoring. |
+| `POST /drain` returns 503 | Same as above | Same as above |
+| Hub returns `rejected_signature` for a "genuine" packet | Signed with a fresh random keypair | Pass `--issuer-secret` matching the configured `issuerPublicKey`. See §4.1. |
+| `pnpm test` shows 29 tests | Stale checkout | `git pull origin development-branch` |
+| `better-sqlite3` tries to compile from source | Node version with no matching prebuild | Switch to Node 24.x |
+| Mesh: `ModuleNotFoundError: lib.interactive` | Using your Python, not Meshtasticator's venv | Run with `<meshtasticator>/.venv/Scripts/python.exe` |
+| Mesh: cannot find Meshtasticator | Not checked out as a sibling directory | Set `MESHTASTICATOR_PATH` |
+| Mesh: relays forward nothing | Nodes defaulting to `CLIENT_MUTE` | `isRepeater: true` on relay nodes — bug #1 in `packages/mesh-sim/README.md` |
+| Mesh: `kill` fails with exit 127 | No standalone `kill` binary in the meshtasticd image | `exec_run(["sh","-c",f"kill -9 {pid}"])` — bug #2, same README |
+| PWA hashing fails on a phone over LAN | `crypto.subtle` needs a secure context | Already fixed in `12c4a4f` — pull if you hit it |
+| Claude Code suggests Soroban or a Rust contract | Missing `CLAUDE.md` | See §2 — get it from Charles |
+
+When something in the mesh breaks, reach for `debug_propagation.py` and **read the real
+output**. All three of the mesh bugs on record were found that way, not by reasoning about
+what should have happened.
+
+---
+
+## 10. Hard constraints — do not break these
+
+From `CLAUDE.md`. These are not preferences; breaking one damages the project.
+
+1. **No Rust, no Soroban.** Stellar Classic only — `MEMO_HASH` for anchoring, claimable
+   balances for payouts.
+2. **No physical hardware, at any stage.** Everything simulated (Meshtasticator, Wokwi).
+   Development cost this September is ₱0, and that is part of the pitch.
+3. **Testnet only**, unless explicitly told otherwise.
+4. **`packages/core` must never import Horizon or RPC.** Field nodes verify signatures fully
+   offline — any network dependency there breaks the threat model. `packages/stellar` is the
+   *only* package allowed to touch Horizon.
+5. **Never add a GPL dependency.** This repo is MIT. `@meshtastic/*` is GPL-3.0-only — that
+   is the entire reason `packages/mesh-sim` is a separate Python process instead of
+   TypeScript. Check the licence before adding anything.
+6. **Out of scope, do not build it:** multi-barangay federation, native mobile app, PAGASA
+   API integration, LGU enrollment workflow.
+7. **Never commit a secret key.** `issuers.json` holds public keys only.
+8. **Do not overclaim** in docs, commits, or the demo. The hosted build proves the packet
+   format, the signature scheme and the rejection rules. It does **not** prove live radio
+   propagation. That distinction stays in every piece of narration.
+
+---
+
+## 11. One-page quickstart
+
+```bash
+git clone https://github.com/Raizellrou/ligtas.git && cd ligtas && git checkout development-branch && pnpm install
+```
+
+```bash
+pnpm --filter @ligtas/core build && pnpm --filter @ligtas/stellar build && pnpm --filter @ligtas/hub build && pnpm test
+```
+
+```bash
+pnpm --filter @ligtas/pwa dev
+```
+
+```powershell
+$env:PORT=3001; node packages/hub/dist/index.js
+```
+
+```bash
+git checkout development-branch && git pull origin development-branch && git checkout -b stage4/pwa-offline
+```
+
+```bash
+git push -u origin stage4/pwa-offline && gh pr create --base development-branch
+```
+
+Ask Charles for: `CLAUDE.md`, `docs/master.md`, and `LIGTAS_DEMO_ISSUER_SECRET`.
