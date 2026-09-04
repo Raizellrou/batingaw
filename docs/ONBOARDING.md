@@ -3,7 +3,8 @@
 For **Juniene** (or anyone picking this repo up on a fresh machine). Written 4 September 2026,
 after Stage 3's build work landed on `development-branch`.
 
-Read this top to bottom once before running anything. Sections 1–4 get you running;
+Read this top to bottom once before running anything. §0 is a copy-paste block that hands the
+setup to Claude Code. Sections 1–4 get you running by hand;
 5–7 are the audit of what actually exists versus what the older docs claim; 8–11 are how
 we work from here (branching, PRs, rules that must not be broken).
 
@@ -13,6 +14,72 @@ Companion docs — read in this order after this one:
 2. [`../LIGTAS-PRD.md`](../LIGTAS-PRD.md) — the spec. Packet format, hub design, threat model, milestones.
 3. [`BUILD-PLAN.md`](BUILD-PLAN.md) — what gets built when. **Its §1 status table is stale — see §6 below.**
 4. Each package's own `README.md` — these are the most accurate docs in the repo.
+
+---
+
+## 0. The shortcut: let Claude Code do the setup
+
+You can hand most of §2–§3 to Claude Code. Open a terminal in an **empty folder** where you
+want the project to live, start `claude`, and paste the block below verbatim.
+
+Be clear about what this does and does not do. It **will** clone the repo, check out the
+right branch, install, build in the right order, run the tests, smoke-test the hub and the
+PWA, and then read the docs and tell you where to start. It **will not** install Node, pnpm,
+Docker, or Python for you (§1 — do that first), and it cannot get you the secrets in §5 —
+only Charles can.
+
+If anything below fails, do not let it improvise a fix. Come back to §9.
+
+````text
+Set up the LIGTAS project on this machine and then brief me on it. Work step by step and
+stop at the first failure rather than improvising around it.
+
+1. Check my toolchain and REPORT versions before doing anything else: node (need 20+,
+   24.x preferred), pnpm (need 9+), git, python (3.11+), and whether Docker is running.
+   Do NOT install or upgrade any of these yourself — if one is missing or too old, stop
+   and tell me what to install.
+
+2. Clone https://github.com/Raizellrou/ligtas.git into the current directory and check
+   out the branch `development-branch`. This is important: `main` is 14 commits behind
+   and is NOT where the work is. Confirm `git log --oneline -1` shows 12c4a4f or newer.
+
+3. Read docs/ONBOARDING.md in full. It is the handoff guide written for me. Follow its
+   sections 3, 6 and 7. Also read CLAUDE.md at the repo root before writing any code —
+   it holds hard constraints that must not be broken.
+
+4. Run `pnpm install`. Then build in this exact order, because these packages depend on
+   each other's compiled dist/ and not their sources:
+     pnpm --filter @ligtas/core build
+     pnpm --filter @ligtas/stellar build
+     pnpm --filter @ligtas/hub build
+
+5. Run `pnpm test`. Expect 5 test files, 30 tests passing. Report the actual number.
+
+6. Smoke-test the hub: start it on port 3001 (build output only — `node
+   packages/hub/dist/index.js`, never `src/index.ts`, it has no direct-run path), then
+   curl /health and /alerts. An empty alerts array and a log line saying
+   "drain: disabled" are both CORRECT on a fresh setup — do not try to "fix" either.
+   Stop the hub when done.
+
+7. Start the PWA dev server (`pnpm --filter @ligtas/pwa dev`) and confirm it serves on
+   localhost:5173 without import errors. Leave it running and tell me the URL.
+
+8. Then brief me, in plain language and without me having to read the whole PRD:
+   - What this project is and what each package does.
+   - What is already built and proven, versus what is still missing. Use
+     docs/ONBOARDING.md section 6 — do NOT trust docs/BUILD-PLAN.md section 1, it is
+     stale and says two finished packages are unstarted.
+   - Exactly where I should start work. Per section 7 that should be item 4.3, PWA
+     offline hardening (vite-plugin-pwa service worker + idb persistence), on a branch
+     named `stage4/pwa-offline` cut from `development-branch`.
+   - Anything that failed above, or that I need from Charles before I can proceed
+     (section 5 lists the secrets).
+
+Do not create any branch, commit anything, or push anything yet. Just set up, verify,
+and brief me.
+````
+
+When it is done and you are ready to actually start coding, that is §8.
 
 ---
 
@@ -75,20 +142,20 @@ Confirm you are in the right place — this must print `12c4a4f` or newer:
 git log --oneline -1
 ```
 
-### Two files you will NOT get from the clone
+### Two files that live only on this branch
 
-`CLAUDE.md` and `docs/master.md` exist on Charles's machine but are **untracked** — they
-were deliberately removed from the repo in commit `d100ccd` ("Remove dev context files
-from submission repo") and never re-added.
+`CLAUDE.md` and `docs/master.md` are on `development-branch` but **not on `main`**. They
+were removed from the submission repo in commit `d100ccd` and restored here in `1b8dd63`,
+deliberately, on the dev branch only.
 
-- `CLAUDE.md` is the per-session context file Claude Code auto-loads. Without it, Claude on
-  your machine will not know the hard constraints in §10 and *will* suggest things that
-  break them (Soroban, GPL Meshtastic libraries, network calls inside `packages/core`).
+- `CLAUDE.md` is the per-session context file Claude Code auto-loads. It holds the hard
+  constraints in §10. Without it, Claude on your machine does not know they exist and
+  *will* suggest breaking them (Soroban, GPL Meshtastic libraries, network calls inside
+  `packages/core`).
 - `docs/master.md` is the longer-form architecture and threat-model reference.
 
-**Ask Charles to send you both files directly.** Put `CLAUDE.md` at the repo root and
-`master.md` in `docs/`. They are untracked rather than gitignored, so they will show up in
-`git status` — do not commit them without asking first (see §7).
+Practical consequence: this is one more reason a clone of `main` is useless to you. Check
+out `development-branch` and you get both automatically — nothing to ask for.
 
 ---
 
@@ -309,7 +376,6 @@ channel, keep them in your shell environment or a local `.env` (already gitignor
 | `LIGTAS_DEMO_ISSUER_SECRET` | `bridge_to_hub.py` | Must match `issuerPublicKey` `GDOOR3ZR…LRCF` in `packages/hub/config/issuers.json`, or the hub correctly rejects everything as `rejected_signature`. |
 | `LIGTAS_HUB_STELLAR_SECRET` | The hub drain worker | The hub's own Testnet account. You can also just generate your own and Friendbot-fund it — nothing depends on reusing his. |
 | Vercel project access | Deploying the PWA | Only if you need to deploy. |
-| `CLAUDE.md` + `docs/master.md` | Working with Claude Code | Untracked files — see §2. |
 
 All Stellar work is **Testnet only**. Generating your own keypairs with `Keypair.random()`
 plus Friendbot is free and encouraged for local work.
@@ -339,7 +405,7 @@ the workflow under your belt on something low-risk:
 1. `docs/BUILD-PLAN.md` §1 — "Not started: `packages/stellar`, `apps/sensor-wokwi`" is
    false. Both shipped. It also says "29 Vitest tests"; it is 30.
 2. `packages/stellar/README.md` "Not yet built" — the hub drain worker **is** built.
-3. `CLAUDE.md` (untracked) — describes `apps/pwa` as using `vite-plugin-pwa` and `idb`.
+3. `CLAUDE.md` — describes `apps/pwa` as using `vite-plugin-pwa` and `idb`.
    **Neither is in `apps/pwa/package.json`.** That is Stage 4 work that has not happened yet.
 4. `apps/pwa/README.md` is still the stock Vite template boilerplate. Never replaced.
 5. `LIGTAS-PRD.md` §11 also says 29 tests.
@@ -399,10 +465,10 @@ fabricating a resolution.
 - Close the doc drift listed in §6.
 - Replace `apps/pwa/README.md`'s template boilerplate with something real.
 - Run `apps/sensor-wokwi` in an actual Wokwi session to close its one honest gap.
-- Decide whether `CLAUDE.md` and `docs/master.md` should be committed to
-  `development-branch`. They were removed from the *submission* repo, which `main` is — but
-  the dev branch arguably should carry them so both machines share the same constraints.
-  **Ask Charles before committing them.**
+- When `development-branch` is next merged into `main` for a submission, decide what to do
+  with `CLAUDE.md` and `docs/master.md`. They were removed from the submission repo once
+  already (`d100ccd`) and restored here (`1b8dd63`) so both machines share the same
+  constraints. Whether they belong in a submission is Charles's call, not a default.
 
 ---
 
@@ -538,7 +604,7 @@ package everything else depends on.
 | Mesh: relays forward nothing | Nodes defaulting to `CLIENT_MUTE` | `isRepeater: true` on relay nodes — bug #1 in `packages/mesh-sim/README.md` |
 | Mesh: `kill` fails with exit 127 | No standalone `kill` binary in the meshtasticd image | `exec_run(["sh","-c",f"kill -9 {pid}"])` — bug #2, same README |
 | PWA hashing fails on a phone over LAN | `crypto.subtle` needs a secure context | Already fixed in `12c4a4f` — pull if you hit it |
-| Claude Code suggests Soroban or a Rust contract | Missing `CLAUDE.md` | See §2 — get it from Charles |
+| Claude Code suggests Soroban or a Rust contract | `CLAUDE.md` not loaded | You are probably on `main`. Check out `development-branch` — see §2 |
 
 When something in the mesh breaks, reach for `debug_propagation.py` and **read the real
 output**. All three of the mesh bugs on record were found that way, not by reasoning about
@@ -596,4 +662,7 @@ git checkout development-branch && git pull origin development-branch && git che
 git push -u origin stage4/pwa-offline && gh pr create --base development-branch
 ```
 
-Ask Charles for: `CLAUDE.md`, `docs/master.md`, and `LIGTAS_DEMO_ISSUER_SECRET`.
+Ask Charles for `LIGTAS_DEMO_ISSUER_SECRET` — only needed when you run the mesh bridge
+(§4.3). Everything else in this quickstart works without it.
+
+Or skip the manual path entirely and paste §0 into Claude Code.
